@@ -722,7 +722,7 @@ class EventsBackgroundUpdatesStore(SQLBaseStore):
             def _get_next_room(txn: Cursor) -> Optional[str]:
                 sql = """
                     SELECT room_id FROM rooms
-                    WHERE room_id > ? AND NOT has_auth_chain_index
+                    WHERE room_id > ? AND (NOT has_auth_chain_index or has_auth_chain_index IS NULL)
                     ORDER BY room_id
                     LIMIT 1
                 """
@@ -777,11 +777,11 @@ class EventsBackgroundUpdatesStore(SQLBaseStore):
 
         if len(event_ids) < batch_size:
             await self.db_pool.updates._background_update_progress(
-                "_chain_cover_index", {"current_room_id": current_room_id}
+                "chain_cover", {"current_room_id": current_room_id}
             )
         else:
             await self.db_pool.updates._background_update_progress(
-                "_chain_cover_index",
+                "chain_cover",
                 {
                     "current_room_id": current_room_id,
                     "last_depth": rows[-1][1],
