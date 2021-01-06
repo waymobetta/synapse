@@ -751,7 +751,9 @@ class EventsBackgroundUpdatesStore(SQLBaseStore):
             sql = """
                 SELECT event_id, topological_ordering, stream_ordering FROM events
                 INNER JOIN state_events USING (event_id)
+                LEFT JOIN event_auth_chains USING (event_id)
                 WHERE events.room_id = ? AND (topological_ordering, stream_ordering) > (?, ?)
+                    AND event_auth_chains.event_id IS NULL
                 ORDER BY topological_ordering, stream_ordering
                 LIMIT ?
             """
@@ -767,7 +769,7 @@ class EventsBackgroundUpdatesStore(SQLBaseStore):
             event_ids, redact_behaviour=EventRedactBehaviour.AS_IS, allow_rejected=True
         )
 
-        await self.runInteraction(
+        await self.db_pool.runInteraction(
             "_chain_cover_index_info",
             self.hs.get_datastores().persist_events._add_chain_info,
             events,
