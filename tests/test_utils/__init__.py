@@ -119,3 +119,14 @@ class FakeResponse:
     def deliverBody(self, protocol):
         protocol.dataReceived(self.body)
         protocol.connectionLost(Failure(ResponseDone()))
+
+
+def skip_unless(condition: bool, reason: str) -> Callable:
+    """A test decorator which will skip the decorated test unless a condition is set"""
+
+    def decorator(f: Callable):
+        if not condition:
+            f.skip = reason
+        return f
+
+    return decorator
