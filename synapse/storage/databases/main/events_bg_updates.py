@@ -14,13 +14,14 @@
 # limitations under the License.
 
 import logging
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from synapse.api.constants import EventContentFields
 from synapse.api.room_versions import KNOWN_ROOM_VERSIONS
 from synapse.events import make_event_from_dict
 from synapse.storage._base import SQLBaseStore, db_to_json, make_in_list_sql_clause
 from synapse.storage.database import DatabasePool
+from synapse.storage.databases.main.events_worker import EventRedactBehaviour
 from synapse.storage.types import Cursor
 from synapse.types import JsonDict
 
@@ -106,6 +107,10 @@ class EventsBackgroundUpdatesStore(SQLBaseStore):
 
         self.db_pool.updates.register_background_update_handler(
             "rejected_events_metadata", self._rejected_events_metadata,
+        )
+
+        self.db_pool.updates.register_background_update_handler(
+            "chain_cover", self._chain_cover_index,
         )
 
     async def _background_reindex_fields_sender(self, progress, batch_size):
@@ -706,3 +711,76 @@ class EventsBackgroundUpdatesStore(SQLBaseStore):
             )
 
         return len(results)
+
+    async def _chain_cover_index(self, progress: dict, batch_size: int) -> int:
+        current_room_id = progress.get("current_room_id", "")
+        last_depth = progress.get("last_depth")
+        last_stream = progress.get("last_stream")
+
+        if last_depth is None:
+
+            def _get_next_room(txn: Cursor) -> Optional[str]:
+                sql = """
+                    SELECT room_id FROM rooms
+                    WHERE room_id > ? AND NOT has_auth_chain_index
+                    ORDER BY room_id
+                    LIMIT 1
+                """
+                txn.execute(sql, (current_room_id,))
+                row = txn.fetchone()
+                if row:
+                    return row[0]
+
+                return None
+
+            current_room_id = await self.db_pool.runInteraction(
+                "_chain_cover_index", _get_next_room
+            )
+            if not current_room_id:
+                await self.db_pool.updates._end_background_update("chain_cover")
+                return 0
+
+            last_depth = -1
+            last_stream = -1
+
+            logger.info("Adding chain cover to %s", current_room_id)
+
+        assert last_depth is not None and last_stream is not None
+
+        def _get_event_ids(txn: Cursor) -> List[Tuple[str, int, int]]:
+            sql = """
+                SELECT event_id, topological_ordering, stream_ordering FROM events
+                INNER JOIN state_events USING (event_id)
+                WHERE events.room_id = ? AND (topological_ordering, stream_ordering) > (?, ?)
+                ORDER BY topological_ordering, stream_ordering
+                LIMIT ?
+            """
+
+            txn.execute(sql, (current_room_id, last_depth, last_stream, batch_size))
+            return txn.fetchall()
+
+        rows = await self.db_pool.runInteraction("_chain_cover_index", _get_event_ids)
+
+        event_ids = [event_id for event_id, _, _ in rows]
+
+        events = await self.get_events(
+            event_ids, redact_behaviour=EventRedactBehaviour.AS_IS, allow_rejected=True
+        )
+
+        await self._add_chain_info(events)
+
+        if len(event_ids) < batch_size:
+            await self.db_pool.updates._background_update_progress(
+                "_chain_cover_index", {"current_room_id": current_room_id}
+            )
+        else:
+            await self.db_pool.updates._background_update_progress(
+                "_chain_cover_index",
+                {
+                    "current_room_id": current_room_id,
+                    "last_depth": rows[-1][1],
+                    "last_stream": rows[-1][2],
+                },
+            )
+
+        return len(event_ids)
