@@ -767,7 +767,7 @@ class EventsBackgroundUpdatesStore(SQLBaseStore):
             event_ids, redact_behaviour=EventRedactBehaviour.AS_IS, allow_rejected=True
         )
 
-        await self._add_chain_info(events)
+        await self.hs.get_datastores().persist_events._add_chain_info(events)
 
         if len(event_ids) < batch_size:
             await self.db_pool.updates._background_update_progress(
