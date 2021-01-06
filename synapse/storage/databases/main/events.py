@@ -466,6 +466,9 @@ class PersistEventsStore:
         if not state_events:
             return
 
+        self._add_chain_info(txn, state_events)
+
+    def _add_chain_info(self, txn, state_events: Dict[str, EventBase]):
         # Map from event ID to chain ID/sequence number.
         chain_map = {}  # type: Dict[str, Tuple[int, int]]
 
